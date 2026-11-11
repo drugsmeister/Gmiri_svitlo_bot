@@ -32,6 +32,7 @@ jobs:
           THREAD_ID: ${{ secrets.THREAD_ID }}
 
       - name: Save state
+        if: always()
         run: |
           git config user.name "dtek-bot"
           git config user.email "bot@users.noreply.github.com"
