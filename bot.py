@@ -1,5 +1,5 @@
 """Одноразовый запуск: проверить график, ответить на команды, написать об изменениях."""
-import os, json, hashlib, datetime as dt
+import os, json, time, hashlib, datetime as dt
 from zoneinfo import ZoneInfo
 import httpx
 
@@ -25,9 +25,17 @@ ICON = {"off": "🔴", "on": "🟢", "maybe": "🟡"}
 
 
 def tg(method, **params):
-    r = httpx.post(f"{API}/{method}", json=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    for attempt in range(2):
+        r = httpx.post(f"{API}/{method}", json=params, timeout=30)
+        if r.status_code == 429 and attempt == 0:
+            try:
+                wait = r.json().get("parameters", {}).get("retry_after", 5)
+            except Exception:
+                wait = 5
+            time.sleep(min(int(wait) + 1, 30))
+            continue
+        r.raise_for_status()
+        return r.json()
 
 
 def send(text, thread=None):
@@ -140,6 +148,7 @@ def status_text(cur, until):
 
 def handle_commands(data, st, now):
     ups = tg("getUpdates", offset=st.get("offset", 0), timeout=0)["result"]
+    todo = {}
     for u in ups:
         st["offset"] = u["update_id"] + 1
         m = u.get("message") or {}
@@ -147,12 +156,22 @@ def handle_commands(data, st, now):
             continue
         words = (m.get("text") or "").split()
         cmd = words[0].split("@")[0].lower() if words else ""
-        thread = m.get("message_thread_id")
-        if cmd in ("/today", "/grafik"):
-            send(full_text(data), thread)
-        elif cmd == "/now":
-            cur, until = status_now(data, now)
-            send(status_text(cur, until) if cur else "Даних немає", thread)
+        if cmd in ("/today", "/grafik", "/now"):
+            kind = "now" if cmd == "/now" else "today"
+            todo[(kind, m.get("message_thread_id"))] = None  # одинаковые команды = один ответ
+
+    save_state(st)  # offset сохраняем ДО отправки, чтобы сбой не вызвал повторных ответов
+
+    for kind, thread in todo:
+        try:
+            if kind == "today":
+                send(full_text(data), thread)
+            else:
+                cur, until = status_now(data, now)
+                send(status_text(cur, until) if cur else "Даних немає", thread)
+        except Exception as e:
+            print("send failed:", e)
+        time.sleep(1.5)
 
 
 def main():
