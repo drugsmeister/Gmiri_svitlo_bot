@@ -22,6 +22,7 @@ HOUR = {
     "mfirst": ("maybe", "on"), "msecond": ("on", "maybe"),
 }
 ICON = {"off": "🔴", "on": "🟢", "maybe": "🟡"}
+WEEKDAYS = ["понеділок", "вівторок", "середа", "четвер", "п’ятниця", "субота", "неділя"]
 
 
 def tg(method, **params):
@@ -100,6 +101,7 @@ def segments(slots):
 
 
 def day_text(data, day, title):
+    title = f"{title} ({day:%d.%m} {WEEKDAYS[day.weekday()]})"
     slots = day_slots(data, day)
     if not slots:
         return f"{title}: даних немає"
