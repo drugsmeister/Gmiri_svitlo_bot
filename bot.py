@@ -46,6 +46,16 @@ def send(text, thread=None):
     return tg("sendMessage", **params)["result"]["message_id"]
 
 
+def delete(message_id):
+    """Удалить своё сообщение; любая ошибка (старше 48 ч, уже удалено) игнорируется."""
+    if not message_id:
+        return
+    try:
+        tg("deleteMessage", chat_id=CHAT_ID, message_id=message_id)
+    except Exception as e:
+        print("delete failed:", e)
+
+
 def load_state():
     try:
         return json.load(open(STATE_FILE))
@@ -198,16 +208,23 @@ def handle_commands(data, st, now):
 
     save_state(st)  # offset сохраняем ДО отправки, чтобы сбой не вызвал повторных ответов
 
+    new_ids = []
     for kind, thread in todo:
         try:
             if kind == "today":
-                send(full_text(data), thread)
+                mid = send(full_text(data), thread)
             else:
                 info = status_now(data, now)
-                send(status_text(info) if info else "Даних немає", thread)
+                mid = send(status_text(info) if info else "Даних немає", thread)
+            new_ids.append(mid)
         except Exception as e:
             print("send failed:", e)
         time.sleep(1.5)
+
+    if new_ids:  # прошлые ответы бота на команды удаляем
+        for old_id in st.get("reply_msgs", []):
+            delete(old_id)
+        st["reply_msgs"] = new_ids
 
 
 def main():
@@ -223,19 +240,16 @@ def main():
     if h != st.get("hash"):
         st["hash"] = h
         new_id = send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
-        old_id = st.get("schedule_msg")
-        if old_id:  # удаляем предыдущее такое же сообщение, чтобы не засорять чат
-            try:
-                tg("deleteMessage", chat_id=CHAT_ID, message_id=old_id)
-            except Exception as e:
-                print("delete failed:", e)
+        delete(st.get("schedule_msg"))  # предыдущее такое же сообщение — убираем
         st["schedule_msg"] = new_id
 
     # 2) свет по графику включился / выключился
     info = status_now(data, now)
     if info and info["cur"] in ("on", "off") and info["cur"] != st.get("status"):
         if st.get("status") is not None:
-            send(status_text(info), THREAD_ID)
+            new_id = send(status_text(info), THREAD_ID)
+            delete(st.get("status_msg"))
+            st["status_msg"] = new_id
         st["status"] = info["cur"]
 
     save_state(st)
