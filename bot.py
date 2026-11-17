@@ -43,7 +43,7 @@ def send(text, thread=None):
     params = {"chat_id": CHAT_ID, "text": text}
     if thread:
         params["message_thread_id"] = thread
-    tg("sendMessage", **params)
+    return tg("sendMessage", **params)["result"]["message_id"]
 
 
 def load_state():
@@ -222,7 +222,14 @@ def main():
     h = hashlib.md5(text.encode()).hexdigest()
     if h != st.get("hash"):
         st["hash"] = h
-        send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
+        new_id = send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
+        old_id = st.get("schedule_msg")
+        if old_id:  # удаляем предыдущее такое же сообщение, чтобы не засорять чат
+            try:
+                tg("deleteMessage", chat_id=CHAT_ID, message_id=old_id)
+            except Exception as e:
+                print("delete failed:", e)
+        st["schedule_msg"] = new_id
 
     # 2) свет по графику включился / выключился
     info = status_now(data, now)
