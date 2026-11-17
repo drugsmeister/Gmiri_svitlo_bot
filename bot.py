@@ -124,27 +124,61 @@ def full_text(data):
 
 
 def status_now(data, now):
-    """(статус сейчас, до какого времени он держится или None)."""
-    s1 = day_slots(data, now.date())
-    if not s1:
-        return None, None
-    s2 = day_slots(data, now.date() + dt.timedelta(days=1))
-    slots = s1 + (s2 or [])
-    i = now.hour * 2 + (now.minute >= 30)
-    cur, j = slots[i], i
-    while j < len(slots) and slots[j] == cur:
-        j += 1
+    """Описание текущего статуса: состояние, длительность, когда сменится, что было до этого."""
+    today = now.date()
+    y = day_slots(data, today - dt.timedelta(days=1))
+    t = day_slots(data, today)
+    if not t:
+        return None
+    n = day_slots(data, today + dt.timedelta(days=1))
+    slots = (y or []) + t + (n or [])
+    base = len(y or [])
+    i = base + now.hour * 2 + (now.minute >= 30)
+    cur = slots[i]
+
+    a = i
+    while a > 0 and slots[a - 1] == cur:
+        a -= 1
+    b = i + 1
+    while b < len(slots) and slots[b] == cur:
+        b += 1
+
     until = None
-    if j < len(slots):
-        until = fmt(j % 48) + (" (завтра)" if j >= 48 else "")
-    return cur, until
+    if b < len(slots):
+        k = b - base
+        until = fmt(k % 48) + (" (завтра)" if k >= 48 else "")
+    # длительность показываем, только если известны оба края интервала
+    dur_n = (b - a) if (a > 0 and b < len(slots)) else None
+
+    prev_kind = prev_dur = None
+    if a > 0:
+        prev_kind = slots[a - 1]
+        c = a - 1
+        while c > 0 and slots[c - 1] == prev_kind:
+            c -= 1
+        if c > 0:
+            prev_dur = a - c
+
+    return {"cur": cur, "until": until, "dur": dur_n,
+            "prev_kind": prev_kind, "prev_dur": prev_dur}
 
 
-def status_text(cur, until):
+def status_text(info):
+    cur, until, dur_n = info["cur"], info["until"], info["dur"]
+    tail = f" (тривалість {dur(dur_n)})" if dur_n else ""
     if cur == "off":
-        return "🔴 Світла немає" + (f", увімкнення о {until}" if until else "")
+        s = "🔴 Світла немає"
+        if until:
+            s += f", увімкнення о {until}"
+        return s + tail
     if cur == "on":
-        return "🟢 Світло є" + (f", наступне відключення о {until}" if until else "")
+        s = "🟢 Світло є"
+        if until:
+            s += f", відключення о {until}"
+        s += tail
+        if info["prev_kind"] == "off" and info["prev_dur"]:
+            s += f"\nБез світла було {dur(info['prev_dur'])}"
+        return s
     return "🟡 Можливе відключення"
 
 
@@ -169,8 +203,8 @@ def handle_commands(data, st, now):
             if kind == "today":
                 send(full_text(data), thread)
             else:
-                cur, until = status_now(data, now)
-                send(status_text(cur, until) if cur else "Даних немає", thread)
+                info = status_now(data, now)
+                send(status_text(info) if info else "Даних немає", thread)
         except Exception as e:
             print("send failed:", e)
         time.sleep(1.5)
@@ -191,11 +225,11 @@ def main():
         send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
 
     # 2) свет по графику включился / выключился
-    cur, until = status_now(data, now)
-    if cur in ("on", "off") and cur != st.get("status"):
+    info = status_now(data, now)
+    if info and info["cur"] in ("on", "off") and info["cur"] != st.get("status"):
         if st.get("status") is not None:
-            send(status_text(cur, until), THREAD_ID)
-        st["status"] = cur
+            send(status_text(info), THREAD_ID)
+        st["status"] = info["cur"]
 
     save_state(st)
 
