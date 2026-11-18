@@ -25,16 +25,27 @@ ICON = {"off": "🔴", "on": "🟢", "maybe": "🟡"}
 WEEKDAYS = ["понеділок", "вівторок", "середа", "четвер", "п’ятниця", "субота", "неділя"]
 
 
+FLOOD_UNTIL = 0.0   # до какого момента Telegram просит бота помолчать (unix-время)
+
+
+class FloodWait(Exception):
+    """Telegram ответил 429 с большой паузой — сейчас отправлять нельзя."""
+
+
 def tg(method, **params):
+    global FLOOD_UNTIL
     for attempt in range(2):
         r = httpx.post(f"{API}/{method}", json=params, timeout=30)
-        if r.status_code == 429 and attempt == 0:
+        if r.status_code == 429:
             try:
-                wait = r.json().get("parameters", {}).get("retry_after", 5)
+                wait = int(r.json().get("parameters", {}).get("retry_after", 5))
             except Exception:
                 wait = 5
-            time.sleep(min(int(wait) + 1, 30))
-            continue
+            if wait <= 10 and attempt == 0:   # короткую паузу просто пережидаем
+                time.sleep(wait + 1)
+                continue
+            FLOOD_UNTIL = max(FLOOD_UNTIL, time.time() + wait + 5)
+            raise FloodWait(wait)
         r.raise_for_status()
         return r.json()
 
@@ -217,6 +228,9 @@ def handle_commands(data, st, now):
                 info = status_now(data, now)
                 mid = send(status_text(info) if info else "Даних немає", thread)
             new_ids.append(mid)
+        except FloodWait:
+            print("flood wait — остальные ответы пропущены")
+            break
         except Exception as e:
             print("send failed:", e)
         time.sleep(1.5)
@@ -228,30 +242,59 @@ def handle_commands(data, st, now):
 
 
 def main():
-    data = fetch()
     st = load_state()
+    if st.get("blocked_until", 0) > time.time():
+        print("Telegram просит подождать (flood wait) — запуск пропущен")
+        return
+    data = fetch()
     now = dt.datetime.now(TZ)
 
-    handle_commands(data, st, now)
+    try:
+        handle_commands(data, st, now)
+    except Exception as e:
+        print("commands failed:", e)
 
     # 1) график изменился
     text = full_text(data)
     h = hashlib.md5(text.encode()).hexdigest()
     if h != st.get("hash"):
+        prev_hash = st.get("hash")
         st["hash"] = h
-        new_id = send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
-        delete(st.get("schedule_msg"))  # предыдущее такое же сообщение — убираем
-        st["schedule_msg"] = new_id
+        save_state(st)  # «график отправлен» фиксируем ДО отправки: лучше пропустить, чем засыпать чат
+        new_id = None
+        try:
+            new_id = send("🔔 Графік оновлено\n\n" + text, THREAD_ID)
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            print("schedule send failed:", code)
+            if code == 429 or code >= 500:  # точно не доставлено — повторим на следующем запуске
+                st["hash"] = prev_hash
+                save_state(st)
+        except FloodWait:  # Telegram просит подождать: не доставлено, повторим после паузы
+            print("schedule send: flood wait")
+            st["hash"] = prev_hash
+            save_state(st)
+        except Exception as e:  # таймаут и т.п.: неясно, дошло ли — повтор не делаем
+            print("schedule send failed:", e)
+        if new_id:
+            delete(st.get("schedule_msg"))  # предыдущее такое же сообщение — убираем
+            st["schedule_msg"] = new_id
+            save_state(st)
 
     # 2) свет по графику включился / выключился
-    info = status_now(data, now)
-    if info and info["cur"] in ("on", "off") and info["cur"] != st.get("status"):
-        if st.get("status") is not None:
-            new_id = send(status_text(info), THREAD_ID)
-            delete(st.get("status_msg"))
-            st["status_msg"] = new_id
-        st["status"] = info["cur"]
+    try:
+        info = status_now(data, now)
+        if info and info["cur"] in ("on", "off") and info["cur"] != st.get("status"):
+            if st.get("status") is not None:
+                new_id = send(status_text(info), THREAD_ID)
+                delete(st.get("status_msg"))
+                st["status_msg"] = new_id
+            st["status"] = info["cur"]
+    except Exception as e:
+        print("status failed:", e)
 
+    if FLOOD_UNTIL:
+        st["blocked_until"] = FLOOD_UNTIL
     save_state(st)
 
 
